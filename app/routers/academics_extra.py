@@ -1,0 +1,129 @@
+from decimal import Decimal
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from app.core.database import get_db
+from app.core.deps import get_current_user, require_roles
+from app.models.people import UserRole, Student
+from app.models.academics_extra import Subject, ExamResult
+from app.schemas.academics_extra import (
+    SubjectCreate, SubjectOut,
+    ExamResultBulkCreate, ExamResultOut,
+    ReportCardOut, ReportCardSubject,
+)
+
+router = APIRouter(prefix="/academics", tags=["exams"])
+
+teacher_roles = require_roles(UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CLASS_TEACHER, UserRole.TEACHER)
+
+
+def calculate_grade(marks: Decimal) -> str:
+    """Simple primary-school grading scale. Adjust boundaries to match your school's real scale."""
+    m = float(marks)
+    if m >= 80:
+        return "A"
+    elif m >= 70:
+        return "B"
+    elif m >= 60:
+        return "C"
+    elif m >= 50:
+        return "D"
+    else:
+        return "F"
+
+
+# ---- Subjects ----
+
+@router.post("/subjects", response_model=SubjectOut, dependencies=[Depends(teacher_roles)])
+def create_subject(payload: SubjectCreate, db: Session = Depends(get_db)):
+    subject = Subject(**payload.dict())
+    db.add(subject)
+    db.commit()
+    db.refresh(subject)
+    return subject
+
+
+@router.get("/subjects", response_model=List[SubjectOut])
+def list_subjects(
+    school_class_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    query = db.query(Subject)
+    if school_class_id is not None:
+        query = query.filter(Subject.school_class_id == school_class_id)
+    return query.all()
+
+
+# ---- Exam Results ----
+
+@router.post("/exam-results", response_model=List[ExamResultOut], dependencies=[Depends(teacher_roles)])
+def record_exam_results(payload: ExamResultBulkCreate, db: Session = Depends(get_db)):
+    results = []
+    for entry in payload.entries:
+        grade = calculate_grade(entry.marks)
+        existing = (
+            db.query(ExamResult)
+            .filter(
+                ExamResult.student_id == entry.student_id,
+                ExamResult.subject_id == entry.subject_id,
+                ExamResult.term_id == payload.term_id,
+            )
+            .first()
+        )
+        if existing:
+            existing.marks = entry.marks
+            existing.grade = grade
+            record = existing
+        else:
+            record = ExamResult(
+                student_id=entry.student_id,
+                subject_id=entry.subject_id,
+                term_id=payload.term_id,
+                marks=entry.marks,
+                grade=grade,
+            )
+            db.add(record)
+        results.append(record)
+
+    db.commit()
+    for r in results:
+        db.refresh(r)
+    return results
+
+
+# ---- Report Card ----
+
+@router.get("/report-card/{student_id}/{term_id}", response_model=ReportCardOut)
+def get_report_card(
+    student_id: int, term_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
+    student = db.query(Student).get(student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    results = (
+        db.query(ExamResult)
+        .filter(ExamResult.student_id == student_id, ExamResult.term_id == term_id)
+        .all()
+    )
+    if not results:
+        raise HTTPException(status_code=404, detail="No exam results found for this student/term")
+
+    subjects = []
+    total = Decimal("0")
+    for r in results:
+        subject = db.query(Subject).get(r.subject_id)
+        subjects.append(ReportCardSubject(subject_name=subject.name, marks=r.marks, grade=r.grade))
+        total += r.marks
+
+    average = total / len(results)
+
+    return ReportCardOut(
+        student_id=student.id,
+        student_name=student.full_name,
+        term_id=term_id,
+        subjects=subjects,
+        total_marks=total,
+        average_marks=average,
+    )
