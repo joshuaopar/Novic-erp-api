@@ -16,13 +16,16 @@ class Subject(Base):
 class ExamResult(Base):
     __tablename__ = "exam_results"
     __table_args__ = (
-        UniqueConstraint("student_id", "subject_id", "term_id", name="uq_student_subject_term"),
+        UniqueConstraint(
+            "student_id", "subject_id", "term_id", "exam_set", name="uq_student_subject_term_set"
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     subject_id = Column(Integer, ForeignKey("subjects.id"), nullable=False)
     term_id = Column(Integer, ForeignKey("terms.id"), nullable=False)
+    exam_set = Column(String, nullable=False, default="end")  # "beginning", "mid" or "end"
     marks = Column(Numeric(5, 2), nullable=False)  # e.g. out of 100
     grade = Column(String, nullable=True)  # computed, e.g. "A", "D1", or a division
 
