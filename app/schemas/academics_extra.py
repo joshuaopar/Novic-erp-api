@@ -25,6 +25,7 @@ class ExamResultEntry(BaseModel):
 
 class ExamResultBulkCreate(BaseModel):
     term_id: int
+    exam_set: str = "end"
     entries: List[ExamResultEntry]
 
 
@@ -33,6 +34,7 @@ class ExamResultOut(BaseModel):
     student_id: int
     subject_id: int
     term_id: int
+    exam_set: str = "end"
     marks: Decimal
     grade: Optional[str]
 
@@ -50,6 +52,8 @@ class ReportCardOut(BaseModel):
     student_id: int
     student_name: str
     term_id: int
+    exam_set: str = "end"
     subjects: List[ReportCardSubject]
     total_marks: Decimal
     average_marks: Decimal
+    
