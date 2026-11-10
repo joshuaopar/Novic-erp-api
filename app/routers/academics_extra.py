@@ -16,6 +16,15 @@ router = APIRouter(prefix="/academics", tags=["exams"])
 
 teacher_roles = require_roles(UserRole.ADMIN, UserRole.HEAD_TEACHER, UserRole.CLASS_TEACHER, UserRole.TEACHER)
 
+EXAM_SETS = ("beginning", "mid", "end")
+
+
+def check_exam_set(value: Optional[str]) -> str:
+    v = (value or "").strip().lower()
+    if v not in EXAM_SETS:
+        raise HTTPException(status_code=400, detail="exam_set must be beginning, mid or end")
+    return v
+
 
 def calculate_grade(marks: Decimal) -> str:
     """Simple primary-school grading scale. Adjust boundaries to match your school's real scale."""
@@ -59,6 +68,11 @@ def list_subjects(
 
 @router.post("/exam-results", response_model=List[ExamResultOut], dependencies=[Depends(teacher_roles)])
 def record_exam_results(payload: ExamResultBulkCreate, db: Session = Depends(get_db)):
+    exam_set = check_exam_set(payload.exam_set)
+    for entry in payload.entries:
+        if entry.marks < 0 or entry.marks > 100:
+            raise HTTPException(status_code=400, detail="Marks must be between 0 and 100")
+
     results = []
     for entry in payload.entries:
         grade = calculate_grade(entry.marks)
@@ -68,6 +82,7 @@ def record_exam_results(payload: ExamResultBulkCreate, db: Session = Depends(get
                 ExamResult.student_id == entry.student_id,
                 ExamResult.subject_id == entry.subject_id,
                 ExamResult.term_id == payload.term_id,
+                ExamResult.exam_set == exam_set,
             )
             .first()
         )
@@ -80,6 +95,7 @@ def record_exam_results(payload: ExamResultBulkCreate, db: Session = Depends(get
                 student_id=entry.student_id,
                 subject_id=entry.subject_id,
                 term_id=payload.term_id,
+                exam_set=exam_set,
                 marks=entry.marks,
                 grade=grade,
             )
@@ -92,23 +108,53 @@ def record_exam_results(payload: ExamResultBulkCreate, db: Session = Depends(get
     return results
 
 
+@router.get("/exam-results", response_model=List[ExamResultOut])
+def list_exam_results(
+    student_id: Optional[int] = Query(None),
+    term_id: Optional[int] = Query(None),
+    subject_id: Optional[int] = Query(None),
+    exam_set: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    query = db.query(ExamResult)
+    if student_id is not None:
+        query = query.filter(ExamResult.student_id == student_id)
+    if term_id is not None:
+        query = query.filter(ExamResult.term_id == term_id)
+    if subject_id is not None:
+        query = query.filter(ExamResult.subject_id == subject_id)
+    if exam_set is not None:
+        query = query.filter(ExamResult.exam_set == check_exam_set(exam_set))
+    return query.all()
+
+
 # ---- Report Card ----
 
 @router.get("/report-card/{student_id}/{term_id}", response_model=ReportCardOut)
 def get_report_card(
-    student_id: int, term_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)
+    student_id: int,
+    term_id: int,
+    exam_set: str = Query("end"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
+    exam_set = check_exam_set(exam_set)
     student = db.query(Student).get(student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
     results = (
         db.query(ExamResult)
-        .filter(ExamResult.student_id == student_id, ExamResult.term_id == term_id)
+        .filter(
+            ExamResult.student_id == student_id,
+            ExamResult.term_id == term_id,
+            ExamResult.exam_set == exam_set,
+        )
         .all()
     )
     if not results:
-        raise HTTPException(status_code=404, detail="No exam results found for this student/term")
+        raise HTTPException(status_code=404, detail="No exam results found for this student/term/exam set")
 
     subjects = []
     total = Decimal("0")
@@ -123,7 +169,9 @@ def get_report_card(
         student_id=student.id,
         student_name=student.full_name,
         term_id=term_id,
+        exam_set=exam_set,
         subjects=subjects,
         total_marks=total,
         average_marks=average,
     )
+    
